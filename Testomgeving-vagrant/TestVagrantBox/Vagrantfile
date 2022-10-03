@@ -1,70 +1,168 @@
-# -*- mode: ruby -*-
-# vi: set ft=ruby :
+# One Vagrantfile to rule them all!
+#
+# This is a generic Vagrantfile that can be used without modification in
+# a variety of situations. Hosts and their properties are specified in
+# `vagrant-hosts.yml`. Provisioning is done by an Ansible playbook,
+# `ansible/site.yml`.
+#
+# See https://github.com/bertvv/ansible-skeleton/ for details
 
-# All Vagrant configuration is done below. The "2" in Vagrant.configure
-# configures the configuration version (we support older styles for
-# backwards compatibility). Please don't change it unless you know what
-# you're doing.
-Vagrant.configure("2") do |config|
-  # The most common configuration options are documented and commented below.
-  # For a complete reference, please see the online documentation at
-  # https://docs.vagrantup.com.
+require 'rbconfig'
+require 'yaml'
 
-  # Every Vagrant development environment requires a box. You can search for
-  # boxes at https://vagrantcloud.com/search.
-  config.vm.box = "base"
+# set default LC_ALL for all BOXES
+ENV["LC_ALL"] = "en_US.UTF-8"
 
-  # Disable automatic box update checking. If you disable this, then
-  # boxes will only be checked for updates when the user runs
-  # `vagrant box outdated`. This is not recommended.
-  # config.vm.box_check_update = false
+# Set your default base box here
+DEFAULT_BASE_BOX = 'bento/centos-7.6'
 
-  # Create a forwarded port mapping which allows access to a specific port
-  # within the machine from a port on the host machine. In the example below,
-  # accessing "localhost:8080" will access port 80 on the guest machine.
-  # NOTE: This will enable public access to the opened port
-  # config.vm.network "forwarded_port", guest: 80, host: 8080
+# When set to `true`, Ansible will be forced to be run locally on the VM
+# instead of from the host machine (provided Ansible is installed).
+FORCE_LOCAL_RUN = false
 
-  # Create a forwarded port mapping which allows access to a specific port
-  # within the machine from a port on the host machine and only allow access
-  # via 127.0.0.1 to disable public access
-  # config.vm.network "forwarded_port", guest: 80, host: 8080, host_ip: "127.0.0.1"
+#
+# No changes needed below this point
+#
 
-  # Create a private network, which allows host-only access to the machine
-  # using a specific IP.
-  # config.vm.network "private_network", ip: "192.168.33.10"
+VAGRANTFILE_API_VERSION = '2'
+PROJECT_NAME = '/' + File.basename(Dir.getwd)
 
-  # Create a public network, which generally matched to bridged network.
-  # Bridged networks make the machine appear as another physical device on
-  # your network.
-  # config.vm.network "public_network"
+# set custom vagrant-hosts file
+vagrant_hosts = ENV['VAGRANT_HOSTS'] ? ENV['VAGRANT_HOSTS'] : 'vagrant-hosts.yml'
+hosts = YAML.load_file(File.join(__dir__, vagrant_hosts))
 
-  # Share an additional folder to the guest VM. The first argument is
-  # the path on the host to the actual folder. The second argument is
-  # the path on the guest to mount the folder. And the optional third
-  # argument is a set of non-required options.
-  # config.vm.synced_folder "../data", "/vagrant_data"
+vagrant_groups = ENV['VAGRANT_GROUPS'] ? ENV['VAGRANT_GROUPS'] : 'vagrant-groups.yml'
+groups = YAML.load_file(File.join(__dir__, vagrant_groups))
 
-  # Provider-specific configuration so you can fine-tune various
-  # backing providers for Vagrant. These expose provider-specific options.
-  # Example for VirtualBox:
-  #
-  # config.vm.provider "virtualbox" do |vb|
-  #   # Display the VirtualBox GUI when booting the machine
-  #   vb.gui = true
-  #
-  #   # Customize the amount of memory on the VM:
-  #   vb.memory = "1024"
-  # end
-  #
-  # View the documentation for the provider you are using for more
-  # information on available options.
+# {{{ Helper functions
 
-  # Enable provisioning with a shell script. Additional provisioners such as
-  # Ansible, Chef, Docker, Puppet and Salt are also available. Please see the
-  # documentation for more information about their specific syntax and use.
-  # config.vm.provision "shell", inline: <<-SHELL
-  #   apt-get update
-  #   apt-get install -y apache2
-  # SHELL
+def run_locally?
+  windows_host? || FORCE_LOCAL_RUN
 end
+
+def windows_host?
+  Vagrant::Util::Platform.windows?
+end
+
+# Set options for the network interface configuration. All values are
+# optional, and can include:
+# - ip (default = DHCP)
+# - netmask (default value = 255.255.255.0
+# - mac
+# - auto_config (if false, Vagrant will not configure this network interface
+# - intnet (if true, an internal network adapter will be created instead of a
+#   host-only adapter)
+def network_options(host)
+  options = {}
+
+  if host.key?('ip')
+    options[:ip] = host['ip']
+    options[:netmask] = host['netmask'] ||= '255.255.255.0'
+  else
+    options[:type] = 'dhcp'
+  end
+
+  options[:mac] = host['mac'].gsub(/[-:]/, '') if host.key?('mac')
+  options[:auto_config] = host['auto_config'] if host.key?('auto_config')
+  options[:virtualbox__intnet] = true if host.key?('intnet') && host['intnet']
+  options
+end
+
+def custom_synced_folders(vm, host)
+  return unless host.key?('synced_folders')
+  folders = host['synced_folders']
+
+  folders.each do |folder|
+    vm.synced_folder folder['src'], folder['dest'], folder['options']
+  end
+end
+
+# }}}
+
+
+# Set options for shell provisioners to be run always. If you choose to include
+# it you have to add a cmd variable with the command as data.
+#
+# Use case: start symfony dev-server
+#
+# example:
+# shell_always:
+#   - cmd: php /srv/google-dev/bin/console server:start 192.168.52.25:8080 --force
+def shell_provisioners_always(vm, host)
+  if host.has_key?('shell_always')
+    scripts = host['shell_always']
+
+    scripts.each do |script|
+      vm.provision "shell", inline: script['cmd'], run: "always"
+    end
+  end
+end
+
+# }}}
+
+# Adds forwarded ports to your Vagrant machine
+#
+# example:
+#  forwarded_ports:
+#    - guest: 88
+#      host: 8080
+def forwarded_ports(vm, host)
+  if host.has_key?('forwarded_ports')
+    ports = host['forwarded_ports']
+
+    ports.each do |port|
+      vm.network "forwarded_port", guest: port['guest'], host: port['host']
+    end
+  end
+end
+
+def provision_ansible(node, host, groups)
+  ansible_mode = run_locally? ? 'ansible_local' : 'ansible'
+  node.vm.provision ansible_mode do |ansible|
+    ansible.compatibility_mode = '2.0'
+    if ! groups.nil?
+      ansible.groups = groups
+    end
+    ansible.playbook = host.key?('playbook') ?
+        "ansible/#{host['playbook']}" :
+        "ansible/site.yml"
+    ansible.become = true
+  end
+end
+
+# }}}
+
+Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
+  
+  hosts.each do |host|
+    config.vm.define host['name'] do |node|
+      node.vm.box = host['box'] ||= DEFAULT_BASE_BOX
+      node.vm.box_url = host['box_url'] if host.key? 'box_url'
+
+      node.vm.hostname = host['name']
+      node.vm.network :private_network, network_options(host)
+      custom_synced_folders(node.vm, host)
+      shell_provisioners_always(node.vm, host)
+      forwarded_ports(node.vm, host)
+
+      node.vm.provider :virtualbox do |vb|
+        vb.memory = host['memory'] if host.key? 'memory'
+        vb.cpus = host['cpus'] if host.key? 'cpus'
+
+        # Add VM to a VirtualBox group
+        # WARNING: if the name of the current directory is the same as the
+        # host name, this will fail.
+        vb.customize ['modifyvm', :id, '--groups', PROJECT_NAME]
+      end
+
+      # Ansible provisioning
+      #provision_ansible(node, host, groups) Geen ansible
+
+      #Jenkins provisioning
+      node.vm.provision 'shell', path: 'provisioning/' + host['name'] + '.sh'
+    end
+  end
+end
+
+# -*- mode: ruby -*-
+# vi: ft=ruby :
