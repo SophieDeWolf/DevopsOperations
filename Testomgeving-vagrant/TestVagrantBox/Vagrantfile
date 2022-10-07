@@ -158,7 +158,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
       # Ansible provisioning
       #provision_ansible(node, host, groups) Geen ansible
 
-      #Jenkins provisioning
+      #provisioning
       node.vm.provision 'shell', path: 'provisioning/' + host['name'] + '.sh'
     end
   end

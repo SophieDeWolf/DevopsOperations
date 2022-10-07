@@ -23,3 +23,5 @@ sudo apt install nginx -y
 sudo systemctl enable nginx
 
 log "Nginx config aanpassen. Dit deel is in test fase."
+
+#Fluentvalidation rood logo aspnetcore
